@@ -1,0 +1,9 @@
+node_modules/
+main.js
+*.local
+data.json
+.DS_Store
+Thumbs.db
+.obsidian/
+dist/
+build/

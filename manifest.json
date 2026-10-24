@@ -1,0 +1,10 @@
+{
+	"id": "pico-w-sync",
+	"name": "Pico W Vault Sync",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Syncs and clones Obsidian vaults with a local Raspberry Pi Pico W SD card server.",
+	"author": "Your Name",
+	"authorUrl": "https://github.com/your-username",
+	"isDesktopOnly": false
+}
