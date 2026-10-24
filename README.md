@@ -6,12 +6,11 @@ An Obsidian plugin that seamlessly synchronizes and clones your vaults with a se
 
 ## Features
 
+- **Quick Sync (`Pico W: Quick Sync (< 128KB)`)**: High-speed synchronization designed for markdown notes, small configs, and canvas files. Automatically skips large media files (configurable in settings, default 128 KB) to minimize Wi-Fi transfer times over microcontrollers.
+- **Full Sync (`Pico W: Sync Vault (Full)`)**: Comprehensive two-way sync for all files in the vault.
+- **Sync History Tracking**: Tracks modification state and file sizes locally to avoid unnecessary re-uploads and eliminate infinite re-sync loops.
 - **Automatic Vault-Name Matching**: By default, syncs to a folder on your Pico W SD card matching your active vault name.
 - **Pico W Clone (`Pico W: Clone Vault`)**: Clone an entire remote vault to a new device or an empty vault in a single click from the Command Palette.
-- **Two-Way Sync (`Pico W: Sync Vault`)**:
-  - Automatically compares local modification times with remote files (incorporating a 2-second buffer for FAT32 filesystem precision).
-  - Uploads new or updated local files.
-  - Downloads new or updated remote files.
 - **Cross-Platform**: Built using Obsidian's native `requestUrl` and binary vault APIs, fully compatible with desktop and mobile.
 - **Basic Authentication**: Supports HTTP Basic Authentication header to secure file endpoints.
 
@@ -63,6 +62,7 @@ In Obsidian, go to **Settings > Pico W Vault Sync**:
 | **Pico W IP Address** | The local IP assigned to your Raspberry Pi Pico W. | `192.168.1.100` |
 | **Credentials (Base64)** | Base64-encoded `username:password` string for Basic Auth. | `YWRtaW46cGFzc3dvcmQ=` |
 | **Remote Vault Folder** | Folder on SD card. Leave blank to match your local vault name. | `(Vault Name)` |
+| **Quick Sync Size Limit (KB)** | Maximum file size in KB for Quick Sync. | `128` |
 
 > **Tip:** You can generate your Base64 auth string in browser devtools or terminal:
 > ```javascript
@@ -75,10 +75,12 @@ In Obsidian, go to **Settings > Pico W Vault Sync**:
 
 Press `Ctrl + P` (or `Cmd + P` on macOS) to open the Command Palette:
 
-1. **`Pico W: Sync Vault`** (`pico-w-sync`):
+1. **`Pico W: Quick Sync (< 128KB)`** (`pico-w-quick-sync`):
+   - Fast synchronization of notes and small files (< 128KB), skipping heavy media.
+2. **`Pico W: Sync Vault (Full)`** (`sync-to-pico-w`):
    - Compares local files against the remote vault folder.
    - Synchronizes modified files and downloads newly added remote files.
-2. **`Pico W: Clone Vault`** (`pico-w-clone`):
+3. **`Pico W: Clone Vault`** (`pico-w-clone`):
    - Lists available vault folders on the Pico W SD card.
    - Lets you choose a vault (or clones immediately if only one exists).
    - Recursively downloads all files and creates local folders.

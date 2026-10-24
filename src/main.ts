@@ -4,12 +4,16 @@ interface PicoSyncSettings {
     picoIp: string;
     authStr: string; // Base64 encoded "username:password"
     vaultFolder: string;
+    quickSyncMaxKb: number; // Max size in KB for quick sync (default 128)
+    syncHistory: Record<string, { localMtime: number; remoteMtime: number; size: number }>;
 }
 
 const DEFAULT_SETTINGS: PicoSyncSettings = {
     picoIp: '192.168.1.100', // Example placeholder IP
     authStr: '',             // Base64 encoded credentials e.g. btoa("username:password")
-    vaultFolder: ''          // Leave empty to automatically use vault name
+    vaultFolder: '',         // Leave empty to automatically use vault name
+    quickSyncMaxKb: 128,     // 128 KB
+    syncHistory: {}
 };
 
 interface RemoteFileInfo {
@@ -24,16 +28,25 @@ export default class PicoSyncPlugin extends Plugin {
     async onload() {
         await this.loadSettings();
 
-        // 1. Sync Vault command
+        // 1. Quick Sync command (default < 128KB)
         this.addCommand({
-            id: 'sync-to-pico-w',
-            name: 'Pico W: Sync Vault',
+            id: 'pico-w-quick-sync',
+            name: `Pico W: Quick Sync (< ${this.settings.quickSyncMaxKb || 128}KB)`,
             callback: () => {
-                this.runSync();
+                this.runSync(true);
             }
         });
 
-        // 2. Clone / Import Vault command
+        // 2. Full Sync Vault command
+        this.addCommand({
+            id: 'sync-to-pico-w',
+            name: 'Pico W: Sync Vault (Full)',
+            callback: () => {
+                this.runSync(false);
+            }
+        });
+
+        // 3. Clone / Import Vault command
         this.addCommand({
             id: 'pico-w-clone',
             name: 'Pico W: Clone Vault',
@@ -51,13 +64,16 @@ export default class PicoSyncPlugin extends Plugin {
         return custom ? custom : this.app.vault.getName();
     }
 
-    async runSync() {
+    async runSync(isQuickSync: boolean = false) {
         if (!this.settings.picoIp || !this.settings.authStr) {
             new Notice('Please configure your Pico W IP and credentials in plugin settings.');
             return;
         }
 
-        new Notice('Pico W Sync Started...');
+        const maxBytes = isQuickSync ? (this.settings.quickSyncMaxKb || 128) * 1024 : Infinity;
+        const syncLabel = isQuickSync ? `Quick Sync (< ${this.settings.quickSyncMaxKb || 128}KB)` : 'Full Sync';
+
+        new Notice(`Pico W ${syncLabel} Started...`);
         try {
             const vaultFolder = this.getVaultFolder();
             const localFiles = this.app.vault.getFiles();
@@ -74,28 +90,95 @@ export default class PicoSyncPlugin extends Plugin {
 
             let uploaded = 0;
             let downloaded = 0;
+            let skippedLarge = 0;
 
-            // 1. Compare local files against remote
+            if (!this.settings.syncHistory) {
+                this.settings.syncHistory = {};
+            }
+
+            // 1. Process local files
             for (const file of localFiles) {
-                const localMtime = Math.floor(file.stat.mtime / 1000);
+                // If quick sync, skip files exceeding the size threshold
+                if (file.stat.size > maxBytes) {
+                    skippedLarge++;
+                    remoteFileMap.delete(file.path);
+                    continue;
+                }
+
+                const localMtimeSec = Math.floor(file.stat.mtime / 1000);
                 const remotePath = `${vaultFolder}/${file.path}`;
                 const remoteEntry = remoteFileMap.get(file.path);
+                const lastSync = this.settings.syncHistory[file.path];
 
                 if (!remoteEntry) {
                     // Local file not on remote -> Upload
                     await this.uploadFile(file, remotePath);
                     uploaded++;
+                    this.settings.syncHistory[file.path] = {
+                        localMtime: localMtimeSec,
+                        remoteMtime: localMtimeSec,
+                        size: file.stat.size
+                    };
                 } else {
-                    const remoteMtime = remoteEntry.mtime;
-                    // Give a 2-second buffer due to FAT32 timestamp limitations
-                    if (localMtime > remoteMtime + 2) {
-                        // LOCAL IS NEWER -> UPLOAD
+                    const remoteMtimeSec = remoteEntry.mtime;
+
+                    // Determine what actually changed
+                    const localChanged = !lastSync ||
+                        Math.abs(localMtimeSec - lastSync.localMtime) > 2 ||
+                        file.stat.size !== lastSync.size;
+
+                    const remoteChanged = !lastSync ||
+                        Math.abs(remoteMtimeSec - lastSync.remoteMtime) > 2 ||
+                        remoteEntry.size !== lastSync.size;
+
+                    if (localChanged && !remoteChanged) {
+                        // Only local was modified -> Upload
                         await this.uploadFile(file, remotePath);
                         uploaded++;
-                    } else if (remoteMtime > localMtime + 2) {
-                        // REMOTE IS NEWER -> DOWNLOAD
+                        this.settings.syncHistory[file.path] = {
+                            localMtime: localMtimeSec,
+                            remoteMtime: remoteMtimeSec,
+                            size: file.stat.size
+                        };
+                    } else if (remoteChanged && !localChanged) {
+                        // Only remote was modified -> Download
                         await this.saveRemoteFileToVault(file.path, remotePath);
                         downloaded++;
+                        const updatedLocal = this.app.vault.getAbstractFileByPath(file.path);
+                        const newLocalMtime = updatedLocal instanceof TFile ? Math.floor(updatedLocal.stat.mtime / 1000) : localMtimeSec;
+                        this.settings.syncHistory[file.path] = {
+                            localMtime: newLocalMtime,
+                            remoteMtime: remoteMtimeSec,
+                            size: remoteEntry.size
+                        };
+                    } else if (localChanged && remoteChanged) {
+                        // Both changed (or first sync): fallback to latest timestamp
+                        if (localMtimeSec > remoteMtimeSec + 2) {
+                            await this.uploadFile(file, remotePath);
+                            uploaded++;
+                            this.settings.syncHistory[file.path] = {
+                                localMtime: localMtimeSec,
+                                remoteMtime: remoteMtimeSec,
+                                size: file.stat.size
+                            };
+                        } else if (remoteMtimeSec > localMtimeSec + 2) {
+                            await this.saveRemoteFileToVault(file.path, remotePath);
+                            downloaded++;
+                            const updatedLocal = this.app.vault.getAbstractFileByPath(file.path);
+                            const newLocalMtime = updatedLocal instanceof TFile ? Math.floor(updatedLocal.stat.mtime / 1000) : localMtimeSec;
+                            this.settings.syncHistory[file.path] = {
+                                localMtime: newLocalMtime,
+                                remoteMtime: remoteMtimeSec,
+                                size: remoteEntry.size
+                            };
+                        } else {
+                            // Already in sync
+                            this.settings.syncHistory[file.path] = {
+                                localMtime: localMtimeSec,
+                                remoteMtime: remoteMtimeSec,
+                                size: file.stat.size
+                            };
+                        }
                     }
                     remoteFileMap.delete(file.path);
                 }
@@ -104,11 +187,27 @@ export default class PicoSyncPlugin extends Plugin {
             // 2. Download any files that exist on remote but not locally
             for (const [relPath, remoteEntry] of remoteFileMap.entries()) {
                 if (relPath.startsWith('.obsidian')) continue;
+
+                if (remoteEntry.size > maxBytes) {
+                    skippedLarge++;
+                    continue;
+                }
+
                 await this.saveRemoteFileToVault(relPath, remoteEntry.path);
                 downloaded++;
+                const createdFile = this.app.vault.getAbstractFileByPath(relPath);
+                const createdMtime = createdFile instanceof TFile ? Math.floor(createdFile.stat.mtime / 1000) : remoteEntry.mtime;
+                this.settings.syncHistory[relPath] = {
+                    localMtime: createdMtime,
+                    remoteMtime: remoteEntry.mtime,
+                    size: remoteEntry.size
+                };
             }
 
-            new Notice(`Sync Complete! Uploaded: ${uploaded} | Downloaded: ${downloaded}`);
+            await this.saveSettings();
+
+            const skipMsg = isQuickSync && skippedLarge > 0 ? ` | Skipped > ${this.settings.quickSyncMaxKb}KB: ${skippedLarge}` : '';
+            new Notice(`${syncLabel} Complete! Uploaded: ${uploaded} | Downloaded: ${downloaded}${skipMsg}`);
         } catch (error) {
             console.error('Pico W Sync Error:', error);
             new Notice('Sync Failed. Check console and Pico W connection.');
@@ -182,6 +281,10 @@ export default class PicoSyncPlugin extends Plugin {
                 return;
             }
 
+            if (!this.settings.syncHistory) {
+                this.settings.syncHistory = {};
+            }
+
             let imported = 0;
             for (const rf of remoteFiles) {
                 const localPath = rf.path.startsWith(`${remoteVaultFolder}/`)
@@ -192,8 +295,17 @@ export default class PicoSyncPlugin extends Plugin {
 
                 await this.saveRemoteFileToVault(localPath, rf.path);
                 imported++;
+
+                const importedFile = this.app.vault.getAbstractFileByPath(localPath);
+                const localMtime = importedFile instanceof TFile ? Math.floor(importedFile.stat.mtime / 1000) : rf.mtime;
+                this.settings.syncHistory[localPath] = {
+                    localMtime: localMtime,
+                    remoteMtime: rf.mtime,
+                    size: rf.size
+                };
             }
 
+            await this.saveSettings();
             notice.hide();
             new Notice(`Pico W Clone Complete! Successfully imported ${imported} file(s) from '${remoteVaultFolder}'.`);
         } catch (error) {
@@ -294,6 +406,9 @@ export default class PicoSyncPlugin extends Plugin {
 
     async loadSettings() {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        if (!this.settings.syncHistory) {
+            this.settings.syncHistory = {};
+        }
     }
 
     async saveSettings() {
@@ -368,6 +483,18 @@ class PicoSyncSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.vaultFolder)
                 .onChange(async (value) => {
                     this.plugin.settings.vaultFolder = value.trim();
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Quick Sync Size Limit (KB)')
+            .setDesc('Maximum file size in kilobytes for Quick Sync (default: 128 KB)')
+            .addText(text => text
+                .setPlaceholder('128')
+                .setValue(String(this.plugin.settings.quickSyncMaxKb ?? 128))
+                .onChange(async (value) => {
+                    const parsed = parseInt(value, 10);
+                    this.plugin.settings.quickSyncMaxKb = isNaN(parsed) || parsed <= 0 ? 128 : parsed;
                     await this.plugin.saveSettings();
                 }));
     }
