@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-pico-w-sync",
-	"version": "1.1.0",
+	"version": "1.1.1",
 	"description": "Obsidian plugin to sync and clone vaults with a Raspberry Pi Pico W SD card server.",
 	"main": "main.js",
 	"type": "module",

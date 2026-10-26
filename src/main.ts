@@ -16,6 +16,8 @@ const DEFAULT_SETTINGS: PicoSyncSettings = {
     syncHistory: {}
 };
 
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 interface RemoteFileInfo {
     path: string;       // Full remote path, e.g. "MyVault/note.md"
     mtime: number;
@@ -113,6 +115,7 @@ export default class PicoSyncPlugin extends Plugin {
                 if (!remoteEntry) {
                     // Local file not on remote -> Upload
                     await this.uploadFile(file, remotePath);
+                    await sleep(150); // Give SD card controller time to write FAT table
                     uploaded++;
                     this.settings.syncHistory[file.path] = {
                         localMtime: localMtimeSec,
@@ -134,6 +137,7 @@ export default class PicoSyncPlugin extends Plugin {
                     if (localChanged && !remoteChanged) {
                         // Only local was modified -> Upload
                         await this.uploadFile(file, remotePath);
+                        await sleep(150); // Give SD card controller time to write FAT table
                         uploaded++;
                         this.settings.syncHistory[file.path] = {
                             localMtime: localMtimeSec,
@@ -155,6 +159,7 @@ export default class PicoSyncPlugin extends Plugin {
                         // Both changed (or first sync): fallback to latest timestamp
                         if (localMtimeSec > remoteMtimeSec + 2) {
                             await this.uploadFile(file, remotePath);
+                            await sleep(150); // Give SD card controller time to write FAT table
                             uploaded++;
                             this.settings.syncHistory[file.path] = {
                                 localMtime: localMtimeSec,
@@ -378,7 +383,8 @@ export default class PicoSyncPlugin extends Plugin {
             method: 'PUT',
             headers: {
                 'Authorization': `Basic ${this.settings.authStr}`,
-                'Content-Type': 'application/octet-stream'
+                'Content-Type': 'application/octet-stream',
+                'Connection': 'close'
             },
             body: fileData
         });
