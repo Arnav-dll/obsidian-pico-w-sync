@@ -1,5 +1,6 @@
 node_modules/
 main.js
+releases/
 *.local
 data.json
 .DS_Store
